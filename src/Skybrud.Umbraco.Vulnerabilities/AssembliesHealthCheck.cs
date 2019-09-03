@@ -6,7 +6,9 @@ using System.Reflection;
 using System.Text;
 using System.Web;
 using Newtonsoft.Json.Linq;
+using Newtonsoft.Json.Schema;
 using Skybrud.Umbraco.Vulnerabilities.Models;
+using Umbraco.Core.IO;
 using Umbraco.Core.Logging;
 using Umbraco.Web.HealthCheck;
 
@@ -26,11 +28,37 @@ namespace Skybrud.Umbraco.Vulnerabilities {
 
             List<HealthCheckStatus> found = new List<HealthCheckStatus>();
 
+            string schemaUrl = "https://gist.githubusercontent.com/abjerner/9574a063498924440ce82f1b665c4a82/raw/schema.json";
+
+
+
+
             string[] feeds = new [] {
                 "https://gist.githubusercontent.com/abjerner/9574a063498924440ce82f1b665c4a82/raw/Umbraco.json",
                 "https://gist.githubusercontent.com/abjerner/9574a063498924440ce82f1b665c4a82/raw/Skybrud.json",
                 //"https://gist.githubusercontent.com/abjerner/9574a063498924440ce82f1b665c4a82/raw/SkybrudNotFound.json"
             };
+
+            JsonSchema schema = null;
+            try {
+                WebClient wc = new WebClient {Encoding = Encoding.UTF8};
+                string schemaContents = wc.DownloadString(schemaUrl);
+                schema = JsonSchema.Parse(System.IO.File.ReadAllText(IOHelper.MapPath("~/Schema.json")));
+            } catch (Exception ex) {
+                LogHelper.Error<AssembliesHealthCheck>("Unable to fetch JSON schema from URL: " + schemaUrl, ex);
+                found.Add(new HealthCheckStatus("Unable to fetch JSON schema from URL <strong>" + schemaUrl + "</strong>") {
+                    ResultType = StatusResultType.Error,
+                    Actions = Enumerable.Empty<HealthCheckAction>()
+                });
+            }
+
+
+
+
+
+
+
+
 
 
             foreach (string feedUrl in feeds) {
@@ -48,9 +76,57 @@ namespace Skybrud.Umbraco.Vulnerabilities {
                     continue;
                 }
 
+                JObject obj;
+                try {
+                    obj = JObject.Parse(contents);
+                } catch (Exception ex) {
+                    LogHelper.Error<AssembliesHealthCheck>("Unable to parse feed from URL: " + feedUrl, ex);
+                    found.Add(new HealthCheckStatus("Unable to parse feed from URL <strong>" + feedUrl + "</strong>")
+                    {
+                        ResultType = StatusResultType.Error,
+                        Actions = Enumerable.Empty<HealthCheckAction>()
+                    });
+                    continue;
+                }
+
+                if (schema != null) {
+                    try {
+                        if (obj.IsValid(schema, out IList<string> errors) == false) {
+
+                            StringBuilder sb = new StringBuilder();
+
+                            sb.AppendLine("Feed with URL <strong>" + feedUrl + "</strong> failed JSON schema validation.");
+                            sb.AppendLine();
+
+                            sb.AppendLine("<ol>");
+                            for (int i = 0; i < errors.Count; i++)
+                            {
+
+                                sb.AppendLine("<li>" + HttpUtility.HtmlEncode(errors[i]) + "</li>");
+                            }
+                            sb.AppendLine("</ol>");
+
+                            found.Add(new HealthCheckStatus(sb + "") {
+                                ResultType = StatusResultType.Error,
+                                Actions = Enumerable.Empty<HealthCheckAction>()
+                            });
+                        }
+                    } catch (Exception ex) {
+                        LogHelper.Error<AssembliesHealthCheck>("JSON schema validation failed for feed with URL " + feedUrl, ex);
+                        found.Add(new HealthCheckStatus("JSON schema validation failed for feed with URL <strong>" + feedUrl + "</strong>") {
+                            ResultType = StatusResultType.Error,
+                            Actions = Enumerable.Empty<HealthCheckAction>()
+                        });
+                        continue;
+                    }
+                }
+
+
+
+
                 VulnerabilityFeed feed;
                 try {
-                    feed = JObject.Parse(contents).ToObject<VulnerabilityFeed>();
+                    feed = obj.ToObject<VulnerabilityFeed>();
                 } catch (Exception ex) {
                     LogHelper.Error<AssembliesHealthCheck>("Unable to parse feed from URL: " + feedUrl, ex);
                     found.Add(new HealthCheckStatus("Unable to parse feed from URL <strong>" + feedUrl + "</strong>") {
